@@ -1,0 +1,22 @@
+field-report-bot/
+├── package.json                          # PROJECT DEPENDENCIES
+├── vercel.json                           # VERCEL DEPLOYMENT CONFIG
+├── .env.example                          # ENVIRONMENT VARIABLES TEMPLATE
+├── src/
+│   ├── types/
+│   │   └── index.ts                      # TYPESCRIPT INTERFACES
+│   ├── utils/
+│   │   ├── supabase.ts                   # SUPABASE CLIENT
+│   │   ├── groq.ts                       # GROQ AI CLIENT
+│   │   ├── memory.ts                     # PATTERN MEMORY SYSTEM
+│   │   ├── rateLimit.ts                  # DAILY LIMITS
+│   │   └── unitConversion.ts             # UNIT CONVERSIONS
+│   └── agents/
+│       ├── dataCleanerAgent.ts           # TEXT CLEANING
+│       ├── photoOrganizerAgent.ts        # PHOTO CATEGORIZATION
+│       └── reportGeneratorAgent.ts       # PDF GENERATION
+├── api/
+│   └── telegram-webhook.ts               # MAIN BOT HANDLER
+└── supabase/
+    ├── schema.sql                        # DATABASE SCHEMA
+    └── policies.sql                      # ROW LEVEL SECURITY POLICIES
