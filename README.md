@@ -27,3 +27,27 @@ field-report-bot/
 ```
 
 ---
+# 1. Create project
+mkdir field-report-bot && cd field-report-bot
+
+# 2. Create folder structure
+mkdir -p src/types src/utils src/agents api supabase
+
+# 3. Copy each file to correct location (see file paths above)
+
+# 4. Create .env file
+cp .env.example .env
+# Edit .env with your API keys
+
+# 5. Install dependencies
+npm install
+
+# 6. Set up Supabase database
+# Copy schema.sql content into Supabase SQL Editor and run
+# Copy policies.sql content into Supabase SQL Editor and run
+
+# 7. Test locally
+npm run dev
+
+# 8. Deploy to Vercel
+npm run deploy
