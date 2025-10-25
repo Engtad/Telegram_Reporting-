@@ -25,7 +25,7 @@ field-report-bot/
     ├── schema.sql                        # DATABASE SCHEMA
     └── policies.sql                      # ROW LEVEL SECURITY POLICIES
 ```
-
+Notes + Photos → Word DOCX (with AI cleaning) → Convert to PDF
 ---
 # 1. Create project
 mkdir field-report-bot && cd field-report-bot
