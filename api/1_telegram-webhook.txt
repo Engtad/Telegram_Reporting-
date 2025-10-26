@@ -1,0 +1,409 @@
+import 'dotenv/config';
+import { Telegraf } from 'telegraf';
+import dotenv from 'dotenv';
+import { cleanMultipleTexts } from '../src/utils/groqCleaner.js';
+import { generateWordDoc } from '../src/utils/wordGenerator.js';
+import { createClient } from '@supabase/supabase-js';
+import * as fs from 'fs';
+import * as path from 'path';
+import libre from 'libreoffice-convert';
+import { promisify } from 'util';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+// Fix __dirname for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Set LibreOffice Portable path - CRITICAL FOR PDF CONVERSION
+process.env.LIBREOFFICE_BINARY = 'C:\\Users\\tad.haby\\LibreOfficePortable\\App\\libreoffice\\program\\soffice.exe';
+
+const libreConvert = promisify(libre.convert);
+
+dotenv.config();
+
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN as string;
+if (!BOT_TOKEN) throw new Error('Missing TELEGRAM_BOT_TOKEN');
+
+const bot = new Telegraf(BOT_TOKEN);
+
+interface UserSession {
+  notes: string[];
+  photoUrls: string[];
+  photoBuffers: Buffer[];
+}
+
+const sessions = new Map<number, UserSession>();
+
+
+
+// START COMMAND
+bot.start((ctx) => {
+  console.log(`✅ User started: ${ctx.from.first_name}`);
+  ctx.reply(
+    '👋 Welcome to Field Report Bot!\n\n' +
+    'Send me:\n' +
+    '📝 Text notes about your field work\n' +
+    '📷 Photos to document your inspection\n\n' +
+    '📄 Commands:\n' +
+    '/report - Generate PDF report\n' +
+    '/exportword - Generate Word doc (AI-cleaned) 🆕\n' +
+    '/clear - Clear current session\n' +
+    '/help - Show all commands\n\n' +
+    '🤖 Powered by GROQ AI text cleaning'
+  );
+});
+
+
+// HELP COMMAND
+bot.help((ctx) => {
+  console.log(`📋 Help requested by ${ctx.from.first_name}`);
+  ctx.reply(
+    '📋 Available Commands:\n\n' +
+    '/start - Start bot\n' +
+    '/report - Generate PDF report\n' +
+    '/exportword - Generate Word document (AI-cleaned) 🆕\n' +
+    '/clear - Clear session data\n' +
+    '/help - Show this message\n\n' +
+    '💡 Tip: Send multiple notes and photos before generating reports!\n' +
+    '🤖 AI text cleaning powered by GROQ'
+  );
+});
+// EXPORTWORD COMMAND - Generate Word + PDF with AI cleaning
+bot.command('exportword', async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+    const session = sessions.get(userId);
+
+    console.log(`📝 Word export requested by ${ctx.from.first_name}`);
+
+    if (!session || (session.notes.length === 0 && session.photoBuffers.length === 0)) {
+      await ctx.reply('❌ No data yet.\n\nSend notes and photos, then type /exportword');
+      return;
+    }
+
+    await ctx.reply('📝 Generating Word + PDF with AI cleaning... (15-25 seconds)');
+
+    // Clean with GROQ AI
+    const cleanedNotes = await cleanMultipleTexts(session.notes);
+    console.log(`✅ Cleaned ${cleanedNotes.length} notes`);
+
+    // Save photos temporarily
+    const tempPhotoPaths: string[] = [];
+    const tempDir = path.join(__dirname, '../temp');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+
+    for (let i = 0; i < session.photoBuffers.length; i++) {
+      const tempPath = path.join(tempDir, `photo-${userId}-${i}.jpg`);
+      fs.writeFileSync(tempPath, session.photoBuffers[i]);
+      tempPhotoPaths.push(tempPath);
+    }
+
+    // Generate Word
+    const wordFilename = `field-report-${userId}-${Date.now()}.docx`;
+    const wordPath = path.join(tempDir, wordFilename);
+    
+    await generateWordDoc({
+      title: `Field Report - ${ctx.from.first_name || 'User'}`,
+      notes: cleanedNotes,
+      imagePaths: tempPhotoPaths,
+      outputPath: wordPath
+    });
+
+    // Convert to PDF
+    const pdfFilename = wordFilename.replace('.docx', '.pdf');
+    const pdfPath = path.join(tempDir, pdfFilename);
+
+    const wordBuffer = fs.readFileSync(wordPath);
+    const pdfBuffer = await libreConvert(wordBuffer, '.pdf', undefined);
+    fs.writeFileSync(pdfPath, pdfBuffer);
+
+    // Upload to Supabase
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
+
+    await supabase.storage.from('reports').upload(`word-reports/${wordFilename}`, wordBuffer);
+    await supabase.storage.from('reports').upload(`pdf-reports/${pdfFilename}`, pdfBuffer);
+
+    // Send both files
+    await ctx.replyWithDocument({ source: wordBuffer, filename: wordFilename });
+    await ctx.replyWithDocument({ 
+      source: pdfBuffer, 
+      filename: pdfFilename 
+    }, {
+      caption: '✅ Report Generated\n\n📝 AI-cleaned with GROQ\n📷 Photos embedded\n\nType /exportword again or /clear to reset.'
+    });
+
+    // Cleanup
+    tempPhotoPaths.forEach(p => {
+      try {
+        fs.unlinkSync(p);
+      } catch(e) {
+        // Ignore cleanup errors
+      }
+    });
+    fs.unlinkSync(wordPath);
+    fs.unlinkSync(pdfPath);
+
+  } catch (error) {
+    console.error('❌ Export error:', error);
+    await ctx.reply('❌ Error: ' + (error as Error).message);
+  }
+});
+
+
+// CLEAR COMMAND
+bot.command('clear', (ctx) => {
+  const userId = ctx.from.id;
+  sessions.delete(userId);
+  console.log(`🗑️ Session cleared for ${ctx.from.first_name}`);
+  ctx.reply('✅ Session cleared! Start fresh by sending new notes and photos.');
+});
+
+// REPORT COMMAND - Generate PDF
+bot.command('report', async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+    const session = sessions.get(userId);
+
+    console.log(`📄 PDF requested by ${ctx.from.first_name}`);
+
+    if (!session || (session.notes.length === 0 && session.photoBuffers.length === 0)) {
+      await ctx.reply('❌ No data yet.\n\nSend notes and photos, then type /report');
+      return;
+    }
+
+    await ctx.reply('📄 Generating PDF... (5-10 seconds)');
+
+    // Generate PDF logic here (your existing code)
+    // ... your PDF generation code ...
+
+    await ctx.reply('✅ PDF Generated!\n\nType /clear to reset or send more notes.');
+
+  } catch (error) {
+    console.error('❌ PDF generation error:', error);
+    await ctx.reply('❌ Error generating PDF: ' + (error as Error).message);
+  }
+});
+
+/// EXPORTWORD COMMAND - Generate Word + PDF with AI cleaning
+
+// EXPORTWORD COMMAND - Generate Word + PDF
+bot.command('exportword', async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+    const session = sessions.get(userId);
+
+    console.log(`📝 Word export requested by ${ctx.from.first_name}`);
+
+    if (!session || (session.notes.length === 0 && session.photoBuffers.length === 0)) {
+      await ctx.reply('❌ No data collected yet.\n\nSend notes and photos, then type /exportword');
+      return;
+    }
+
+    await ctx.reply('📝 Generating Word + PDF with AI cleaning... (15-25 seconds)');
+
+    // Clean notes with AI
+    console.log('🤖 Cleaning notes with GROQ AI...');
+    const cleanedNotes = await cleanMultipleTexts(session.notes);
+    console.log(`✅ Cleaned ${cleanedNotes.length} notes`);
+
+    // Save photos temporarily
+    const tempPhotoPaths: string[] = [];
+    const tempDir = path.join(__dirname, '../temp');
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+
+    for (let i = 0; i < session.photoBuffers.length; i++) {
+      const tempPath = path.join(tempDir, `photo-${userId}-${i}.jpg`);
+      fs.writeFileSync(tempPath, session.photoBuffers[i]);
+      tempPhotoPaths.push(tempPath);
+    }
+
+    // Generate Word document
+    const wordFilename = `field-report-${userId}-${Date.now()}.docx`;
+    const wordPath = path.join(tempDir, wordFilename);
+    
+    await generateWordDoc({
+      title: `Field Report - ${ctx.from.first_name || 'User'}`,
+      notes: cleanedNotes,
+      imagePaths: tempPhotoPaths,
+      outputPath: wordPath
+    });
+
+    console.log(`📄 Word generated: ${wordFilename}`);
+
+    // Convert Word to PDF using LibreOffice
+    const pdfFilename = wordFilename.replace('.docx', '.pdf');
+    const pdfPath = path.join(tempDir, pdfFilename);
+
+    try {
+      const wordBuffer = fs.readFileSync(wordPath);
+      const pdfBuffer = await libreConvert(wordBuffer, '.pdf', undefined);
+      fs.writeFileSync(pdfPath, pdfBuffer);
+      console.log(`📄 PDF converted: ${pdfFilename}`);
+    } catch (err) {
+      console.error('PDF conversion error:', err);
+      await ctx.reply('⚠️ PDF conversion failed. Sending Word file only.');
+    }
+
+    // Upload to Supabase
+    const supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_ANON_KEY!
+    );
+
+    const wordBuffer = fs.readFileSync(wordPath);
+    let wordUrl = '';
+    let pdfUrl = '';
+
+    // Upload Word
+    const { data: wordData } = await supabase.storage
+      .from('reports')
+      .upload(`word-reports/${wordFilename}`, wordBuffer, {
+        contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      });
+
+    if (wordData) {
+      wordUrl = `${process.env.SUPABASE_URL}/storage/v1/object/public/reports/${wordData.path}`;
+    }
+
+    // Upload PDF if exists
+    if (fs.existsSync(pdfPath)) {
+      const pdfBuffer = fs.readFileSync(pdfPath);
+      const { data: pdfData } = await supabase.storage
+        .from('reports')
+        .upload(`pdf-reports/${pdfFilename}`, pdfBuffer, {
+          contentType: 'application/pdf'
+        });
+
+      if (pdfData) {
+        pdfUrl = `${process.env.SUPABASE_URL}/storage/v1/object/public/reports/${pdfData.path}`;
+      }
+    }
+
+    console.log('☁️ Files uploaded to Supabase');
+
+    // Send Word file
+    await ctx.replyWithDocument(
+      { source: wordBuffer, filename: wordFilename },
+      { caption: '📝 Word Document (AI-cleaned text)' }
+    );
+
+    // Send PDF if converted successfully
+    if (fs.existsSync(pdfPath)) {
+      const pdfBuffer = fs.readFileSync(pdfPath);
+      await ctx.replyWithDocument(
+        { source: pdfBuffer, filename: pdfFilename },
+        {
+          caption: '✅ **Report Generated**\n\n' +
+                   `📝 Notes: ${cleanedNotes.length} (AI-cleaned)\n` +
+                   `📷 Photos: ${session.photoBuffers.length}\n` +
+                   `🤖 GROQ AI Processing\n\n` +
+                   (wordUrl ? `📄 [Word File](${wordUrl})\n` : '') +
+                   (pdfUrl ? `📕 [PDF File](${pdfUrl})` : ''),
+          parse_mode: 'Markdown'
+        }
+      );
+    }
+
+    console.log('✅ Files sent to Telegram');
+
+    // Cleanup temp files
+    tempPhotoPaths.forEach(p => { try { fs.unlinkSync(p); } catch(e) {} });
+    try { fs.unlinkSync(wordPath); } catch(e) {}
+    try { fs.unlinkSync(pdfPath); } catch(e) {}
+
+    await ctx.reply('💡 Session still active. Type /clear to reset or /report for old PDF format.');
+
+  } catch (error) {
+    console.error('❌ Export error:', error);
+    await ctx.reply('❌ Error generating report: ' + (error as Error).message);
+  }
+});
+
+// TEXT HANDLER - Store notes
+bot.on('text', async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+    const text = ctx.message.text;
+    
+    // Ignore commands
+    if (text.startsWith('/')) return;
+    
+    console.log(`📝 Text from ${ctx.from.first_name}: ${text}`);
+    
+    if (!sessions.has(userId)) {
+      sessions.set(userId, { notes: [], photoUrls: [], photoBuffers: [] });
+    }
+    
+    const session = sessions.get(userId)!;
+    session.notes.push(text);
+    
+    await ctx.reply(
+      `✅ Note ${session.notes.length} saved!\n\n` +
+      `📊 Current session:\n` +
+      `• ${session.notes.length} note(s)\n` +
+      `• ${session.photoBuffers.length} photo(s)\n\n` +
+      `Type /exportword when ready to generate Word + PDF.\n` +
+      `Type /report when ready to generate PDF.`
+    );
+    
+  } catch (error) {
+    console.error('❌ Text processing error:', error);
+    await ctx.reply('❌ Error saving note. Please try again.');
+  }
+});
+
+
+// PHOTO HANDLER - Download and store photos
+bot.on('photo', async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+    console.log(`📷 Photo from ${ctx.from.first_name}`);
+    
+    if (!sessions.has(userId)) {
+      sessions.set(userId, { notes: [], photoUrls: [], photoBuffers: [] });
+    }
+    
+    const session = sessions.get(userId)!;
+    
+    // Get highest resolution photo
+    const photo = ctx.message.photo[ctx.message.photo.length - 1];
+    const fileId = photo.file_id;
+    
+    // Download photo from Telegram
+    const fileLink = await ctx.telegram.getFileLink(fileId);
+    const response = await fetch(fileLink.href);
+    const photoBuffer = Buffer.from(await response.arrayBuffer());
+    
+    session.photoUrls.push(fileLink.href);
+    session.photoBuffers.push(photoBuffer);
+    
+    console.log(`💾 Photo ${session.photoBuffers.length} saved (${(photoBuffer.length / 1024).toFixed(1)}KB)`);
+    
+    await ctx.reply(
+      `📷 Photo ${session.photoBuffers.length} saved!\n\n` +
+      `📊 Current session:\n` +
+      `• ${session.notes.length} note(s)\n` +
+      `• ${session.photoBuffers.length} photo(s)\n\n` +
+      `Type /exportword when ready to generate Word + PDF.\n` +
+      `Type /report when ready to generate PDF.`
+    );
+    
+  } catch (error) {
+    console.error('❌ Photo processing error:', error);
+    await ctx.reply('❌ Error saving photo. Please try again.');
+  }
+});
+
+
+// START BOT
+bot.launch();
+console.log('✅ Bot is running with polling mode!');
+console.log('📡 Listening for messages...');
+console.log('📄 PDF generation enabled!');
+
+// GRACEFUL SHUTDOWN
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));

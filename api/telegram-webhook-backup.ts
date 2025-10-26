@@ -5,9 +5,6 @@ import { cleanMultipleTexts } from '../src/utils/groqCleaner.js';
 import { generateWordDoc } from '../src/utils/wordGenerator.js';
 import { createClient } from '@supabase/supabase-js';
 import { generatePdfFromHtml, createReportHtml } from '../src/utils/htmlToPdf.js';
-import { cleanFieldText } from '../src/agents/dataCleanerAgent.js';  // ← ADD AI AGENTS
-import { categorizePhoto } from '../src/agents/photoOrganizerAgent.js';  // ← ADD AI AGENTS
-import { generateReportPDF } from '../src/agents/reportGeneratorAgent.js';  // ← ADD AI AGENTS
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
@@ -16,6 +13,8 @@ import { dirname } from 'path';
 // Fix __dirname for ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+
 
 dotenv.config();
 
@@ -28,69 +27,44 @@ interface UserSession {
   notes: string[];
   photoUrls: string[];
   photoBuffers: Buffer[];
-  photoCaptions: string[];  // ← Store caption for each photo
-  photoCategories: string[];  // ← NEW: Store AI-categorized photo types
 }
-
 
 const sessions = new Map<number, UserSession>();
 
-// ============================================
-// COMMAND HANDLERS (Must come BEFORE text handler)
-// ============================================
 
-// START COMMAND - Initialize without clearing existing data
+
+// START COMMAND
 bot.start((ctx) => {
-  const userId = ctx.from.id;
   console.log(`✅ User started: ${ctx.from.first_name}`);
-  
-  // Only create new session if one doesn't exist
-    if (!sessions.has(userId)) {
-    sessions.set(userId, { notes: [], photoUrls: [], photoBuffers: [], photoCaptions: [], photoCategories: [] });
-  }
-  
-  const session = sessions.get(userId)!;
-  
   ctx.reply(
     '👋 Welcome to Field Report Bot!\n\n' +
     'Send me:\n' +
     '📝 Text notes about your field work\n' +
     '📷 Photos to document your inspection\n\n' +
     '📄 Commands:\n' +
-    '/exportword - Generate Word + PDF (AI-cleaned) 🆕\n' +
+    '/report - Generate PDF report\n' +
+    '/exportword - Generate Word doc (AI-cleaned) 🆕\n' +
     '/clear - Clear current session\n' +
     '/help - Show all commands\n\n' +
-    `📊 Current session: ${session.notes.length} note(s), ${session.photoBuffers.length} photo(s)\n\n` +
     '🤖 Powered by GROQ AI text cleaning'
   );
 });
+
 
 // HELP COMMAND
 bot.help((ctx) => {
   console.log(`📋 Help requested by ${ctx.from.first_name}`);
   ctx.reply(
     '📋 Available Commands:\n\n' +
-    '/start - Start bot & show current session\n' +
-    '/exportword - Generate Word + PDF (AI-cleaned) 🆕\n' +
+    '/start - Start bot\n' +
+    '/report - Generate PDF report\n' +
+    '/exportword - Generate Word document (AI-cleaned) 🆕\n' +
     '/clear - Clear session data\n' +
     '/help - Show this message\n\n' +
     '💡 Tip: Send multiple notes and photos before generating reports!\n' +
     '🤖 AI text cleaning powered by GROQ'
   );
 });
-
-// CLEAR COMMAND - Reset session
-bot.command('clear', async (ctx) => {
-  const userId = ctx.from.id;
-  sessions.delete(userId);
-  console.log(`🗑️ Session cleared for ${ctx.from.first_name}`);
-  
-  await ctx.reply(
-    '🗑️ Session cleared!\n\n' +
-    'Start fresh by sending new notes and photos.'
-  );
-});
-
 // EXPORTWORD COMMAND - Generate Word + PDF with AI cleaning
 bot.command('exportword', async (ctx) => {
   try {
@@ -127,36 +101,28 @@ bot.command('exportword', async (ctx) => {
     const wordFilename = `field-report-${userId}-${Date.now()}.docx`;
     const wordPath = path.join(tempDir, wordFilename);
     
-        await generateWordDoc({
+    await generateWordDoc({
       title: `Field Report - ${ctx.from.first_name || 'User'}`,
       notes: cleanedNotes,
       imagePaths: tempPhotoPaths,
-      imageCaptions: session.photoCaptions,  // ← ADD THIS: Pass photo captions
       outputPath: wordPath
     });
 
-    console.log(`✅ Word document saved: ${wordPath}`);
-
-    // Generate PDF using Puppeteer
+    // Generate PDF using Puppeteer (NO LibreOffice needed!)
     const pdfFilename = wordFilename.replace('.docx', '.pdf');
     const pdfPath = path.join(tempDir, pdfFilename);
 
-    console.log('🌐 Launching Puppeteer...');
-        const html = createReportHtml(
+    const html = createReportHtml(
       `Field Report - ${ctx.from.first_name || 'User'}`,
       cleanedNotes,
-      session.photoBuffers,
-      session.photoCaptions  // ← ADD THIS: Pass photo captions
+      session.photoBuffers
     );
 
-    console.log('📄 Converting HTML to PDF...');
     await generatePdfFromHtml({
       html,
       outputPath: pdfPath,
       title: `Field Report - ${ctx.from.first_name || 'User'}`
     });
-
-    console.log(`✅ PDF saved: ${pdfPath}`);
 
     // Read files
     const wordBuffer = fs.readFileSync(wordPath);
@@ -191,12 +157,33 @@ bot.command('exportword', async (ctx) => {
   }
 });
 
-// ============================================
-// MESSAGE HANDLERS (Must come AFTER commands)
-// ============================================
-
-// Handle regular text messages (field notes)
-// ⚠️ ONLY ONE text handler - no duplicates!
+bot.on('text', async (ctx) => {
+  const text = ctx.message.text;
+  
+  // Ignore ALL commands (not just those starting with /)
+  if (text.startsWith('/')) {
+    return; // Let command handlers deal with it
+  }
+  
+  const userId = ctx.from.id;
+  console.log(`📝 Text from ${ctx.from.first_name}: ${text}`);
+  
+  if (!sessions.has(userId)) {
+    sessions.set(userId, { notes: [], photoUrls: [], photoBuffers: [] });
+  }
+  
+  const session = sessions.get(userId)!;
+  session.notes.push(text);
+  
+  await ctx.reply(
+    `✅ Note ${session.notes.length} saved!\n\n` +
+    `📊 Current session:\n` +
+    `• ${session.notes.length} note(s)\n` +
+    `• ${session.photoBuffers.length} photo(s)\n\n` +
+    `Type /exportword when ready to generate Word + PDF.`
+  );
+});
+/// Handle regular text messages (field notes)
 bot.on('text', async (ctx) => {
   const text = ctx.message.text;
   
@@ -212,12 +199,10 @@ bot.on('text', async (ctx) => {
   
   // Initialize session if it doesn't exist
   if (!sessions.has(userId)) {
-        sessions.set(userId, { 
-          notes: [], 
-    photoUrls: [], 
-    photoBuffers: [], 
-    photoCaptions: [], 
-    photoCategories: []  // ← ADD THIS
+    sessions.set(userId, { 
+      notes: [], 
+      photoUrls: [], 
+      photoBuffers: [] 
     });
     console.log(`🆕 New session created for ${userName}`);
   }
@@ -235,24 +220,21 @@ bot.on('text', async (ctx) => {
     `📊 Current session:\n` +
     `• ${session.notes.length} note(s)\n` +
     `• ${session.photoBuffers.length} photo(s)\n\n` +
-    `Type /exportword when ready to generate Word + PDF.`
+    `Type /exportword when ready to generate Word + PDF.`,
+    { parse_mode: 'Markdown' }
   );
 });
 
-// PHOTO HANDLER - Download and store photos WITH CAPTIONS
+
+// PHOTO HANDLER - Download and store photos
 bot.on('photo', async (ctx) => {
   try {
     const userId = ctx.from.id;
-    const userName = ctx.from.first_name || 'User';
+    console.log(`📷 Photo from ${ctx.from.first_name}`);
     
-    // Get caption if user added one
-    const caption = ctx.message.caption || '';
-    
-    console.log(`📷 Photo from ${userName}${caption ? ` with caption: "${caption}"` : ''}`);
-    
-      if (!sessions.has(userId)) {
-    sessions.set(userId, { notes: [], photoUrls: [], photoBuffers: [], photoCaptions: [], photoCategories: [] });
-  }
+    if (!sessions.has(userId)) {
+      sessions.set(userId, { notes: [], photoUrls: [], photoBuffers: [] });
+    }
     
     const session = sessions.get(userId)!;
     
@@ -265,24 +247,18 @@ bot.on('photo', async (ctx) => {
     const response = await fetch(fileLink.href);
     const photoBuffer = Buffer.from(await response.arrayBuffer());
     
-        // Store photo AND its caption with AI categorization
     session.photoUrls.push(fileLink.href);
     session.photoBuffers.push(photoBuffer);
-    session.photoCaptions.push(caption);  // ← STORE THE CAPTION
-    const category = categorizePhoto(caption);  // ← AI CATEGORIZATION
-    session.photoCategories.push(category);  // ← STORE CATEGORY
     
     console.log(`💾 Photo ${session.photoBuffers.length} saved (${(photoBuffer.length / 1024).toFixed(1)}KB)`);
-    if (caption) {
-      console.log(`📝 Caption: "${caption}"`);
-    }
     
-        await ctx.reply(
-      `📷 Photo ${session.photoBuffers.length} saved!${caption ? `\n📝 Caption: "${caption}"` : ''}${category !== 'uncategorized' ? `\n🏷️ Category: ${category}` : ''}\n\n` +
+    await ctx.reply(
+      `📷 Photo ${session.photoBuffers.length} saved!\n\n` +
       `📊 Current session:\n` +
       `• ${session.notes.length} note(s)\n` +
       `• ${session.photoBuffers.length} photo(s)\n\n` +
-      `Type /exportword when ready to generate Word + PDF.`
+      `Type /exportword when ready to generate Word + PDF.\n` +
+      `Type /report when ready to generate PDF.`
     );
     
   } catch (error) {
@@ -292,10 +268,7 @@ bot.on('photo', async (ctx) => {
 });
 
 
-// ============================================
 // START BOT
-// ============================================
-
 bot.launch();
 console.log('✅ Bot is running with polling mode!');
 console.log('📡 Listening for messages...');
