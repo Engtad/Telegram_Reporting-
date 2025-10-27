@@ -101,23 +101,36 @@ bot.command('exportword', async (ctx) => {
     const userId = ctx.from.id;
     const session = sessions.get(userId);
 
-    console.log(`📝 Export requested by ${ctx.from.first_name}`);
+    console.log(`📝 Word export requested by ${ctx.from.first_name}`);
 
     if (!session || (session.notes.length === 0 && session.photoBuffers.length === 0)) {
       await ctx.reply('❌ No data yet.\n\nSend notes and photos, then type /exportword');
       return;
     }
 
-    await ctx.reply('📝 Generating reports with AI cleaning... (15-25 seconds)');
+    await ctx.reply('📝 Generating Word + PDF with AI cleaning... (15-25 seconds)');
 
     // Clean with GROQ AI
     const cleanedNotes = await cleanMultipleTexts(session.notes);
     console.log(`✅ Cleaned ${cleanedNotes.length} notes`);
 
-    // Prepare report data
+    // Save photos temporarily
+    const tempPhotoPaths: string[] = [];
+    const tempDir = path.join(__dirname, '../temp');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+
+    for (let i = 0; i < session.photoBuffers.length; i++) {
+      const tempPath = path.join(tempDir, `photo-${userId}-${i}.jpg`);
+      fs.writeFileSync(tempPath, session.photoBuffers[i]);
+      tempPhotoPaths.push(tempPath);
+    }
+
+        // Prepare report data for professional templates
     const reportData = {
       client: 'Field Inspection',
-      site: 'Site Location',
+      site: 'Site Location', 
       technician: ctx.from?.username || ctx.from?.first_name || 'Field Technician',
       notes: cleanedNotes,
       photoUrls: session.photoUrls,
@@ -125,15 +138,10 @@ bot.command('exportword', async (ctx) => {
       photoBuffers: session.photoBuffers
     };
 
-    const tempDir = path.join(__dirname, '../temp');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-
-    // Generate PDF
-    await ctx.telegram.sendMessage(ctx.chat.id, '📄 Generating PDF...');
+    // Generate Professional PDF
+    await ctx.telegram.sendMessage(ctx.chat.id, '📄 Generating professional PDF report...');
     const html = createProfessionalReportHTML(reportData);
-    const pdfFilename = `report-${userId}-${Date.now()}.pdf`;
+    const pdfFilename = `professional-report-${userId}-${Date.now()}.pdf`;
     const pdfPath = path.join(tempDir, pdfFilename);
     
     await generatePdfFromHtml({
@@ -141,76 +149,68 @@ bot.command('exportword', async (ctx) => {
       outputPath: pdfPath
     });
 
-    // Generate Word
-    await ctx.telegram.sendMessage(ctx.chat.id, '📄 Generating Word...');
+    // Generate Professional Word document
+    await ctx.telegram.sendMessage(ctx.chat.id, '📄 Generating professional Word report...');
     const doc = createProfessionalWordReport(reportData);
     const wordBuffer = await Packer.toBuffer(doc);
-    const wordFilename = `report-${userId}-${Date.now()}.docx`;
+    const wordFilename = `professional-report-${userId}-${Date.now()}.docx`;
 
-    // Upload to Supabase
-    const supabase = createClient(
-	  process.env.SUPABASE_URL!,process.env.SUPABASE_SERVICE_ROLE_KEY! );
-    
+    console.log(`✅ PDF saved: ${pdfPath}`);
+
+        // Upload PDF to Supabase
     const pdfBuffer = fs.readFileSync(pdfPath);
-    const { error: pdfError } = await supabase
+    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
+    const { data: pdfData, error: pdfError } = await supabase
       .storage
       .from('reports')
       .upload(pdfFilename, pdfBuffer, {
-        contentType: 'application/pdf',
-        upsert: true
+        contentType: 'application/pdf'
       });
     
     if (pdfError) throw pdfError;
-
-    const { error: wordError } = await supabase
-      .storage
-      .from('reports')
-      .upload(wordFilename, wordBuffer, {
-        contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        upsert: true
-      });
     
-    if (wordError) throw wordError;
-
-    // Get public URLs
     const { data: pdfUrlData } = supabase
       .storage
       .from('reports')
       .getPublicUrl(pdfFilename);
 
+    // Upload Word to Supabase
+    const { data: wordData, error: wordError } = await supabase
+      .storage
+      .from('reports')
+      .upload(wordFilename, wordBuffer, {
+        contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      });
+    
+    if (wordError) throw wordError;
+    
     const { data: wordUrlData } = supabase
       .storage
       .from('reports')
       .getPublicUrl(wordFilename);
 
-    // Send files as documents
-    await ctx.replyWithDocument(
-      { source: wordBuffer, filename: wordFilename },
-      { caption: '📄 Word Report (Editable)' }
-    );
+    // Send both files to user
+    await ctx.replyWithDocument({ source: wordBuffer, filename: wordFilename });
+    await ctx.replyWithDocument({ 
+      source: pdfBuffer, 
+      filename: pdfFilename 
+    }, {
+      caption: '✅ Professional Reports Generated\n\n📝 Clean professional format\n📷 Photos organized by sections\n📄 No border frames (better compatibility)\n\nType /exportword again or /clear to reset.'
+    });
 
-    await ctx.replyWithDocument(
-      { source: pdfBuffer, filename: pdfFilename },
-      { 
-        caption: '✅ Reports Generated!\n\n' +
-                 `📊 ${cleanedNotes.length} notes, ${session.photoBuffers.length} photos\n` +
-                 '🤖 AI-cleaned text\n' +
-                 '📝 Professional format\n\n' +
-                 'Type /exportword again or /clear to reset.'
-      }
-    );
-
-    // Cleanup
+    // Clean up temp files
+    tempPhotoPaths.forEach(p => {
+      try {
+        fs.unlinkSync(p);
+      } catch(e) {}
+    });
     fs.unlinkSync(pdfPath);
-
-    console.log(`✅ Reports sent to ${ctx.from.first_name}`);
 
   } catch (error) {
     console.error('❌ Export error:', error);
-    await ctx.reply(`❌ Error: ${(error as Error).message}`);
+    await ctx.reply('❌ Error: ' + (error as Error).message);
   }
 });
-
 
 // ============================================
 // MESSAGE HANDLERS (Must come AFTER commands)
