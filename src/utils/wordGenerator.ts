@@ -1,5 +1,5 @@
 // src/utils/wordGenerator.ts
-import { Document, Packer, Paragraph, TextRun, ImageRun, HeadingLevel, AlignmentType } from 'docx';
+import { Document, Packer, Paragraph, TextRun, ImageRun, HeadingLevel, AlignmentType, BorderStyle, PageBorderDisplay, PageBorderOffsetFrom } from 'docx';
 import * as fs from 'fs';
 
 interface WordDocOptions {
@@ -103,10 +103,53 @@ export async function generateWordDoc(options: WordDocOptions): Promise<void> {
     }
   }
 
-  // Create document
+  // Create document with ISO 5457 page borders - using more reliable approach
   const doc = new Document({
     sections: [{
-      properties: {},
+      properties: {
+        page: {
+          // ISO 5457 margins: 20mm left (filing edge), 10mm other sides
+          // Convert mm to twips (1 mm = 56.7 twips)
+          margin: {
+            top: 567,    // 10mm = 567 twips
+            right: 567,  // 10mm = 567 twips
+            bottom: 567, // 10mm = 567 twips
+            left: 1134   // 20mm = 1134 twips
+          },
+          // ISO 5457 page border frame - using simplified approach
+          borders: {
+            pageBorders: {
+              display: PageBorderDisplay.ALL_PAGES,
+              offsetFrom: PageBorderOffsetFrom.PAGE,
+              zOrder: "front"
+            },
+            pageBorderTop: {
+              style: BorderStyle.SINGLE,
+              size: 20, // 2.5pt = approx 0.7mm
+              color: '000000',
+              space: 24
+            },
+            pageBorderRight: {
+              style: BorderStyle.SINGLE,
+              size: 20,
+              color: '000000',
+              space: 24
+            },
+            pageBorderBottom: {
+              style: BorderStyle.SINGLE,
+              size: 20,
+              color: '000000',
+              space: 24
+            },
+            pageBorderLeft: {
+              style: BorderStyle.SINGLE,
+              size: 20,
+              color: '000000',
+              space: 24
+            }
+          }
+        }
+      },
       children: sections
     }]
   });
